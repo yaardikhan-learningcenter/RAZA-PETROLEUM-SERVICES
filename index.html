@@ -4663,7 +4663,8 @@ function renderSetupUsers(el){
     return;
   }
   const admin = isAdmin();
-  el.innerHTML = `<div class="card">
+  const warnDef = list.some(u=>u.defaultPw) ? `<div class="card card-pad" style="border-left:4px solid #d99a1e; background:#fff8e6; margin-bottom:12px;"><b>⚠ Default login still in use.</b> The user name is <b>admin</b> and the password is <b>admin123</b>. Click <b>Change user name / password</b> below and set your own now.</div>` : '';
+  el.innerHTML = warnDef + `<div class="card">
     <div class="card-head"><div><h3>Users</h3><div class="hint">${admin?'Add users, change user names and passwords, or remove users.':'You can change your own user name and password.'}</div></div>
       ${admin?'<button class="btn btn-primary btn-sm" onclick="openUserForm()">+ Add User</button>':''}</div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>User name</th><th>Access</th><th>Created</th><th style="width:190px"></th></tr></thead><tbody>
@@ -4706,7 +4707,7 @@ function saveUser(id){
   if(u && u.role==='admin' && role!=='admin' && users().filter(x=>x.role==='admin').length<2){ toast('There must be at least one admin.','err'); return; }
   if(u){
     u.username=name; u.role=role;
-    if(pw){ u.salt=newSalt(); u.hash=pwHash(pw,u.salt); }
+    if(pw){ u.salt=newSalt(); u.hash=pwHash(pw,u.salt); delete u.defaultPw; }
     else if(own && name!==me.username){ /* hash unchanged, keep session valid */ }
   } else {
     const salt=newSalt(); users().push({id:uid('user'), username:name, salt, hash:pwHash(pw,salt), role, created:todayISO()});
@@ -4720,41 +4721,46 @@ function deleteUser(id){
 }
 authCheck();
 
-/* cloud versions: prove you own the cloud account, then sign-in is switched off so a new admin can be created */
+/* GitHub version: prove you own the data repository (paste the access token), then the login is reset to the default admin */
 async function forgotPassword(){
-  const c = CLOUD.cfg; const fb = c.provider==='firebase';
-  const pw = prompt(fb? 'Enter the password of your Firebase account ('+(c.firebase.email||'')+') to reset the app sign-in:' : 'Paste your GitHub access token to reset the app sign-in:');
-  if(!pw) return false;
-  try{
-    if(fb){ await fbSignIn(c.firebase.email, pw); } else if(pw.trim()!==c.github.token) throw new Error('That token does not match.');
-  }catch(e){ alert('Could not verify: '+(e.code==='bad-login'?'wrong password.':e.message)); return false; }
-  DB.users = []; markDirty(); authSetSession(null); authCheck(); renderAll(); toast('App sign-in was reset. Go to Setup → Users & Password to create a new admin.','warn');
+  const c = CLOUD.cfg;
+  const tk = prompt('Paste your GitHub access token to reset the app login to the default (admin / admin123):');
+  if(!tk) return false;
+  if(!c || tk.trim()!==c.github.token){ alert('That token does not match the one saved on this device.'); return false; }
+  DB.users = []; ensureDefaultAdmin(); markDirty(); authSetSession(null); authCheck(); renderAll();
+  toast('Login reset. Sign in with  admin / admin123  and change it under Setup → Users & Password.','warn');
   return false;
+}
+/* default login: user name "admin", password "admin123" — change it from Setup → Users & Password */
+var DEFAULT_USER = 'admin', DEFAULT_PASS = 'admin123';
+function ensureDefaultAdmin(){
+  if(!DB.users) DB.users = [];
+  if(DB.users.length) return false;
+  const salt = newSalt();
+  DB.users.push({id:uid('user'), username:DEFAULT_USER, salt, hash:pwHash(DEFAULT_PASS,salt), role:'admin', created:todayISO(), defaultPw:true});
+  return true;
 }
 
 
+
 /* =========================================================
-   CLOUD DATABASE — Firebase (Firestore) or a private GitHub repo.
-   The hosted page holds NO data; everything is loaded from / saved to the cloud.
+   CLOUD DATABASE — a private GitHub repository (data.json).
+   The hosted page holds NO data; everything is loaded from / saved to GitHub.
    ========================================================= */
-var CLOUD = {cfg:null, rev:null, n:0, chunkCount:0, loaded:false, status:'off', timer:null, saving:false, again:false, retry:null, poll:null, err:'', idToken:null, idExp:0};
-var CLOUD_KEY = 'rp_cloud_cfg2', CLOUD_BAK = 'rp_cloud_unsynced';
+var CLOUD = {cfg:null, rev:null, loaded:false, status:'off', timer:null, saving:false, again:false, retry:null, poll:null, err:''};
+var CLOUD_KEY = 'rp_cloud_cfg3', CLOUD_BAK = 'rp_cloud_unsynced';
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
 function lsSet(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
 function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 function preset(){ return window.RP_CONFIG || {}; }
+function presetGh(){ const g = preset().github||{}, o = {}; ['owner','repo','branch','path'].forEach(k=>{ if(g[k]) o[k]=g[k]; }); return o; }
 function cloudLoadCfg(){
   let c = null; try{ c = JSON.parse(lsGet(CLOUD_KEY)||'null'); }catch(e){}
-  const p = preset();
-  if(!c){ if(!p.provider) return null; c = {provider:p.provider}; }
-  c.firebase = Object.assign({}, p.firebase||{}, c.firebase||{});
-  c.github   = Object.assign({branch:'main', path:'data.json'}, p.github||{}, c.github||{});
-  c.provider = c.provider || p.provider || 'firebase';
-  const ok = c.provider==='firebase' ? (c.firebase.projectId && c.firebase.apiKey && c.firebase.refreshToken) : (c.github.owner && c.github.repo && c.github.token);
-  return ok ? c : null;
+  c = c || {};
+  c.github = Object.assign({branch:'main', path:'data.json'}, c.github||{}, presetGh());
+  return (c.github.owner && c.github.repo && c.github.token) ? c : null;
 }
 function cloudSaveCfgStore(){ lsSet(CLOUD_KEY, JSON.stringify(CLOUD.cfg)); }
-function isFB(){ return CLOUD.cfg && CLOUD.cfg.provider==='firebase'; }
 
 /* ---- UTF-8 safe base64 (GitHub) ---- */
 function b64enc(str){ const b = new TextEncoder().encode(str); let s=''; for(let i=0;i<b.length;i+=0x8000) s+=String.fromCharCode.apply(null,b.subarray(i,i+0x8000)); return btoa(s); }
@@ -4769,13 +4775,10 @@ async function netFetch(url, opt){
 function cloudHuman(e){
   const m = e.message||'';
   if(e.offline) return 'No internet connection. Your changes are kept on this device and will upload when you are online again.';
-  if(e.code==='bad-login') return 'Wrong email or password.';
-  if(e.code==='no-db') return 'The Firestore database has not been created yet. In the Firebase console open Build → Firestore Database → Create database.';
-  if(e.code==='no-auth') return 'Email/Password sign-in is not switched on. In the Firebase console open Build → Authentication → Sign-in method → Email/Password → Enable.';
-  if(e.code==='expired') return 'Your sign-in has expired. Please sign in again.';
-  if(e.status===401 && !isFB()) return 'GitHub says “Bad credentials”: the access token is wrong, incomplete or expired. Create a new token and paste the whole thing (it starts with github_pat_).';
-  if(e.status===403 && isFB()) return 'The database refused this account. Check the security rules include your email address (see README, step 5).';
-  if(e.status===404 && !isFB()) return 'GitHub cannot find that repository or file. Check the username, the repository name and that the token was given access to this repository.';
+  if(e.status===401) return 'GitHub says “Bad credentials”: the access token is wrong, incomplete or expired. Create a new token and paste the whole thing (it starts with github_pat_).';
+  if(e.status===403 && /rate limit/i.test(m)) return 'GitHub is temporarily limiting requests. Wait a minute and try again.';
+  if(e.status===403) return 'GitHub refused this token. Give the token “Contents: Read and write” permission on the data repository.';
+  if(e.status===404) return 'GitHub cannot find that repository or file. Check the username, the repository name and that the token was given access to this repository.';
   return m;
 }
 
@@ -4801,86 +4804,17 @@ async function ghPutFile(text, rev){
   return (await r.json()).content.sha;
 }
 
-/* ================= Firebase provider (REST, no SDK) ================= */
-function fbDocs(){ return 'https://firestore.googleapis.com/v1/projects/'+encodeURIComponent(CLOUD.cfg.firebase.projectId)+'/databases/(default)/documents'; }
-function fbName(id){ return 'projects/'+CLOUD.cfg.firebase.projectId+'/databases/(default)/documents/erp/'+id; }
-async function fbAuthErr(r){
-  let m=''; try{ m=((await r.json()).error||{}).message||''; }catch(e){}
-  if(/EMAIL_NOT_FOUND|INVALID_PASSWORD|INVALID_LOGIN_CREDENTIALS|USER_DISABLED/.test(m)) return mkErr('Wrong email or password.', 401, {code:'bad-login'});
-  if(/OPERATION_NOT_ALLOWED|CONFIGURATION_NOT_FOUND/.test(m)) return mkErr(m, 400, {code:'no-auth'});
-  if(/API key not valid|API_KEY_INVALID/i.test(m) || r.status===400 && /API key/i.test(m)) return mkErr('The Web API key is not correct.', 400);
-  if(/TOO_MANY_ATTEMPTS/.test(m)) return mkErr('Too many wrong attempts. Wait a few minutes and try again.', 429);
-  if(/TOKEN_EXPIRED|INVALID_REFRESH_TOKEN|USER_NOT_FOUND|CREDENTIAL_TOO_OLD/.test(m)) return mkErr('expired', 401, {code:'expired'});
-  return mkErr('Sign-in failed'+(m?' ('+m+')':''), r.status);
-}
-async function fbSignIn(email, password){
-  const f = CLOUD.cfg.firebase;
-  const r = await netFetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+encodeURIComponent(f.apiKey), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email, password, returnSecureToken:true})});
-  if(!r.ok) throw await fbAuthErr(r);
-  const j = await r.json(); CLOUD.idToken=j.idToken; CLOUD.idExp=Date.now()+Number(j.expiresIn||3600)*1000; f.refreshToken=j.refreshToken; f.email=j.email||email; cloudSaveCfgStore();
-}
-async function fbToken(){
-  if(CLOUD.idToken && Date.now() < CLOUD.idExp-120000) return CLOUD.idToken;
-  const f = CLOUD.cfg.firebase;
-  const r = await netFetch('https://securetoken.googleapis.com/v1/token?key='+encodeURIComponent(f.apiKey), {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'grant_type=refresh_token&refresh_token='+encodeURIComponent(f.refreshToken)});
-  if(!r.ok) throw await fbAuthErr(r);
-  const j = await r.json(); CLOUD.idToken=j.id_token; CLOUD.idExp=Date.now()+Number(j.expires_in||3600)*1000; if(j.refresh_token){ f.refreshToken=j.refresh_token; cloudSaveCfgStore(); }
-  return CLOUD.idToken;
-}
-async function fbFetch(path, opt){
-  const tok = await fbToken();
-  return netFetch(fbDocs()+path, Object.assign({}, opt||{}, {headers:{'Authorization':'Bearer '+tok, 'Content-Type':'application/json'}}));
-}
-async function fbErr(r){
-  let j={}; try{ j=(await r.json()).error||{}; }catch(e){}
-  const m = j.message||'';
-  if(r.status===404 && /does not exist|database/i.test(m) && !/Document/i.test(m)) return mkErr(m, 404, {code:'no-db'});
-  if(r.status===403 || j.status==='PERMISSION_DENIED') return mkErr('Permission denied by the database rules.', 403);
-  if(r.status===409 || j.status==='ABORTED' || j.status==='FAILED_PRECONDITION' || /already exists|precondition/i.test(m)) return mkErr('conflict', 409);
-  return mkErr('Firebase '+r.status+(m?': '+m:''), r.status);
-}
-async function fbPeek(){
-  const r = await fbFetch('/erp/meta');
-  if(r.status===404){ const e = await fbErr(r); if(e.code==='no-db') throw e; return null; }
-  if(!r.ok) throw await fbErr(r);
-  const m = await r.json(); return {rev:m.updateTime, n:Number((m.fields.n||{}).integerValue||0), chunks:Number((m.fields.chunks||{}).integerValue||0)};
-}
-async function fbGet(){
-  for(let attempt=0; attempt<3; attempt++){
-    const m = await fbPeek(); if(!m) return null;
-    const rs = await Promise.all(Array.from({length:m.chunks},(_,i)=>fbFetch('/erp/c'+i)));
-    const parts=[]; let good=true;
-    for(const r of rs){ if(!r.ok){ throw await fbErr(r); } const d = await r.json(); if(Number((d.fields.n||{}).integerValue||0)!==m.n){ good=false; break; } parts.push((d.fields.t||{}).stringValue||''); }
-    if(!good) continue;
-    CLOUD.n = m.n; CLOUD.chunkCount = m.chunks;
-    return {rev:m.rev, text:parts.join('')};
-  }
-  throw mkErr('The cloud data changed while loading. Please try again.', 409);
-}
-async function fbPut(text, rev){
-  const CH = 300000, chunks=[]; let i=0;
-  while(i<text.length){ let e=Math.min(text.length,i+CH); if(e<text.length){ const c=text.charCodeAt(e-1); if(c>=0xD800 && c<=0xDBFF) e--; } chunks.push(text.slice(i,e)); i=e; }
-  if(!chunks.length) chunks.push('');
-  const n = (CLOUD.n||0)+1, f = CLOUD.cfg.firebase;
-  const writes = chunks.map((t,k)=>({update:{name:fbName('c'+k), fields:{t:{stringValue:t}, n:{integerValue:String(n)}}}}));
-  for(let k=chunks.length;k<(CLOUD.chunkCount||0);k++) writes.push({delete:fbName('c'+k)});
-  writes.push({update:{name:fbName('meta'), fields:{n:{integerValue:String(n)}, chunks:{integerValue:String(chunks.length)}, savedAt:{stringValue:new Date().toISOString()}, by:{stringValue:f.email||''}}}, currentDocument: rev? {updateTime:rev} : {exists:false}});
-  const r = await fbFetch(':commit', {method:'POST', body:JSON.stringify({writes})});
-  if(!r.ok) throw await fbErr(r);
-  const j = await r.json(); CLOUD.n = n; CLOUD.chunkCount = chunks.length;
-  return j.writeResults[j.writeResults.length-1].updateTime;
-}
+/* ================= remote data file ================= */
+async function remoteGet(){ return ghGetFile(); }
+async function remotePut(text, rev){ return ghPutFile(text, rev); }
+async function remotePeekRev(){ const f = await ghGetFile(); return f? f.rev : null; }
 
-/* ================= provider-neutral ================= */
-async function remoteGet(){ return isFB()? fbGet() : ghGetFile(); }
-async function remotePut(text, rev){ return isFB()? fbPut(text, rev) : ghPutFile(text, rev); }
-async function remotePeekRev(){ if(isFB()){ const m = await fbPeek(); return m? m.rev : null; } const f = await ghGetFile(); return f? f.rev : null; }
 
 /* ---- load DB from cloud text ---- */
 function cloudApplyDB(parsed){
   if(!parsed || !parsed.tx || !parsed.meta) throw new Error('this is not a valid ERP data file');
   DB = parsed; _dbv++;
-  ensureSchema(); syncExpenseHeads();
+  ensureSchema(); syncExpenseHeads(); ensureDefaultAdmin();
   seqCounter = 1; Object.keys(DB.tx).forEach(k=>DB.tx[k].forEach(r=>{ r._seq = seqCounter++; }));
 }
 function cloudApplyText(text){ cloudApplyDB(JSON.parse(text)); }
@@ -4984,7 +4918,7 @@ async function cloudStart(){
 async function cloudConnect(fromDialog){
   CLOUD.status = 'loading'; CLOUD.loaded = false; updateSavePill();
   try{
-    if(!isFB()) await ghRepoOk();
+    await ghRepoOk();
     const f = await remoteGet();
     if(!f){ CLOUD.status='seed'; updateSavePill(); cloudOfferSeed(); return; }
     cloudApplyText(f.text); CLOUD.rev = f.rev; CLOUD.loaded = true; isDirty = false; CLOUD.status = 'synced'; CLOUD.shownAuthErr=false;
@@ -5004,19 +4938,19 @@ async function cloudConnect(fromDialog){
 /* the cloud database is empty: bring in the offline data */
 function cloudOfferSeed(){
   closeModal();
-  openModal('☁ Cloud database is empty',
-    `<p style="font-size:13.5px; line-height:1.55; margin-top:0;">You are connected. There is no data in the cloud yet.</p>
-     <p style="font-size:13.5px; line-height:1.55;">To bring over everything from your <b>offline version</b>, choose its file — either the <b>.html</b> file you have been using, or a <b>.json</b> export. It is uploaded once, then every device sees the same data.</p>
+  openModal('☁ No data file on GitHub yet',
+    `<p style="font-size:13.5px; line-height:1.55; margin-top:0;">You are connected to GitHub, but the data file <b>“${esc(CLOUD.cfg.github.path)}”</b> is not in the repository yet.</p>
+     <p style="font-size:13.5px; line-height:1.55;">Easiest: upload the supplied <b>data.json</b> to the data repository on github.com. Or bring over your <b>offline version</b> now — choose its <b>.html</b> file (or a <b>.json</b> export). It is uploaded once, then every device sees the same data.</p>
      <input type="file" id="seed-file" accept=".html,.htm,.json,application/json,text/html" style="display:none" onchange="cloudSeedFromFile(this)">`,
     `<button class="btn" onclick="cloudSeedEmpty()">Start with an empty database</button><button class="btn btn-primary" onclick="document.getElementById('seed-file').click()">Choose offline file…</button>`);
 }
 function cloudSeedFromFile(inp){
   const f = inp.files[0]; if(!f) return; const rd = new FileReader();
-  rd.onload = ()=>{ try{ const p = parseDataFile(rd.result); cloudApplyDB(p); cloudSeedGo('Uploaded '+(DB.tx.expenses.length+DB.tx.cardSales.length+DB.tx.nozzleDiesel.length)+'+ records from “'+f.name+'” to the cloud.'); }
+  rd.onload = ()=>{ try{ const p = parseDataFile(rd.result); cloudApplyDB(p); cloudSeedGo('Uploaded '+(DB.tx.expenses.length+DB.tx.cardSales.length+DB.tx.nozzleDiesel.length)+'+ records from “'+f.name+'” to GitHub.'); }
     catch(e){ toast('Could not read that file: '+e.message,'err'); } };
   rd.readAsText(f);
 }
-function cloudSeedEmpty(){ cloudSeedGo('Empty cloud database created.'); }
+function cloudSeedEmpty(){ cloudSeedGo('Empty data file created on GitHub.'); }
 async function cloudSeedGo(msg){
   CLOUD.loaded = true; CLOUD.rev = null; isDirty = true; closeModal();
   await cloudSave(true);
@@ -5029,77 +4963,53 @@ function cloudStartPolling(){
     if(!CLOUD.cfg || !CLOUD.loaded || isDirty || CLOUD.saving || document.hidden) return;
     try{ const rev = await remotePeekRev(); if(rev && rev!==CLOUD.rev && !isDirty){ const f = await remoteGet(); if(f){ cloudApplyText(f.text); CLOUD.rev=f.rev; renderAll(); toast('Updated from the cloud (changed on another device).','ok'); } } }catch(e){}
   };
-  CLOUD.poll = setInterval(check, isFB()? 30000 : 60000);
+  CLOUD.poll = setInterval(check, 30000);
   if(!CLOUD._vis){ CLOUD._vis=true; document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) check(); }); }
 }
 
+
 /* ---- connection dialog ---- */
-var _cloudTab = null, _cloudFirst = false, _cloudMsg = '';
+var _cloudFirst = false, _cloudMsg = '';
 function openCloudDialog(first, message){
   _cloudFirst = !!first; _cloudMsg = message||'';
-  const c = CLOUD.cfg || cloudLoadCfg() || {provider:preset().provider||'firebase', firebase:Object.assign({},preset().firebase||{}), github:Object.assign({branch:'main',path:'data.json'},preset().github||{})};
-  const p = preset(), tab = _cloudTab || c.provider || 'firebase';
+  const c = CLOUD.cfg || cloudLoadCfg() || {github:Object.assign({branch:'main',path:'data.json'}, presetGh())};
+  const p = presetGh(), gh = c.github||{};
   const stMap = {off:'Not connected', loading:'Connecting…', saving:'Saving…', pending:'Saving soon…', synced:'Connected — all changes saved', offline:'Offline — changes are kept on this device and sync later', error:'Last save failed: '+CLOUD.err, local:'Offline mode', seed:'Connected — waiting for the first upload'};
   const status = message || stMap[CLOUD.status];
-  const fb = c.firebase||{}, gh = c.github||{};
-  openModal('☁ Cloud storage',
-    `<p class="small-note" style="margin-top:0;">Your data is stored in your own cloud database and loaded automatically on every device you connect. Status: <b style="${(CLOUD.status==='error'||message)?'color:#b3413a':''}">${esc(status)}</b></p>
-     <div class="tabs" style="margin-bottom:12px;"><button class="tab-btn ${tab==='firebase'?'active':''}" onclick="_cloudTab='firebase'; openCloudDialog(_cloudFirst,_cloudMsg)">Firebase (recommended)</button><button class="tab-btn ${tab==='github'?'active':''}" onclick="_cloudTab='github'; openCloudDialog(_cloudFirst,_cloudMsg)">GitHub repository</button></div>
-     ${tab==='firebase'? `
-       <div class="field-row">
-         <div class="field"><label>Firebase Project ID</label><input id="cl-fb-project" value="${esc(fb.projectId||'')}" ${p.firebase&&p.firebase.projectId?'readonly':''} placeholder="e.g. raza-petroleum-erp"></div>
-         <div class="field"><label>Web API key</label><input id="cl-fb-key" value="${esc(fb.apiKey||'')}" ${p.firebase&&p.firebase.apiKey?'readonly':''} placeholder="AIza…"></div>
-       </div>
-       <div class="field-row">
-         <div class="field"><label>Your email (Firebase user)</label><input id="cl-fb-email" type="email" value="${esc(fb.email||'')}" autocomplete="username" autocapitalize="none"></div>
-         <div class="field"><label>Password</label><input id="cl-fb-pass" type="password" autocomplete="current-password"></div>
-       </div>
-       <div id="cl-err" style="color:#b3413a; font-size:12.5px; min-height:16px;"></div>
-       <p class="small-note">Sign in once on each device — it stays signed in afterwards. The Project ID and key can be put in <code>config.js</code> so you never type them.</p>`
-     : `
-       <div class="field-row">
-         <div class="field"><label>GitHub username (owner)</label><input id="cl-gh-owner" value="${esc(gh.owner||'')}" ${p.github&&p.github.owner?'readonly':''} placeholder="e.g. raees123 — not your email"></div>
-         <div class="field"><label>Data repository name</label><input id="cl-gh-repo" value="${esc(gh.repo||'')}" ${p.github&&p.github.repo?'readonly':''} placeholder="e.g. raza-erp-data"></div>
-       </div>
-       <div class="field-row">
-         <div class="field"><label>Branch</label><input id="cl-gh-branch" value="${esc(gh.branch||'main')}"></div>
-         <div class="field"><label>Data file</label><input id="cl-gh-path" value="${esc(gh.path||'data.json')}"></div>
-       </div>
-       <div class="field"><label>Access token (fine-grained, this repo only, Contents: read &amp; write)</label><input id="cl-gh-token" type="password" value="${esc(gh.token||'')}" placeholder="github_pat_…" autocomplete="off"></div>
-       <div id="cl-err" style="color:#b3413a; font-size:12.5px; min-height:16px;"></div>
-       <p class="small-note">The token is stored only in this browser. Enter it once on each device. Never share it.</p>`}`,
+  openModal('☁ Cloud storage (GitHub)',
+    `<p class="small-note" style="margin-top:0;">Your data is stored as <code>data.json</code> in your own <b>private GitHub repository</b> and loaded automatically on every device. Status: <b style="${(CLOUD.status==='error'||message)?'color:#b3413a':''}">${esc(status)}</b></p>
+     <div class="field-row">
+       <div class="field"><label>GitHub username (owner)</label><input id="cl-gh-owner" value="${esc(gh.owner||'')}" ${p.owner?'readonly':''} placeholder="e.g. raees123 — not your email" autocapitalize="none"></div>
+       <div class="field"><label>Data repository name</label><input id="cl-gh-repo" value="${esc(gh.repo||'')}" ${p.repo?'readonly':''} placeholder="e.g. raza-erp-data" autocapitalize="none"></div>
+     </div>
+     <div class="field-row">
+       <div class="field"><label>Branch</label><input id="cl-gh-branch" value="${esc(gh.branch||'main')}" ${p.branch?'readonly':''}></div>
+       <div class="field"><label>Data file</label><input id="cl-gh-path" value="${esc(gh.path||'data.json')}" ${p.path?'readonly':''}></div>
+     </div>
+     <div class="field"><label>Access token (fine-grained, this repository only, Contents: Read &amp; write)</label><input id="cl-gh-token" type="password" value="${esc(gh.token||'')}" placeholder="github_pat_…" autocomplete="off"></div>
+     <div id="cl-err" style="color:#b3413a; font-size:12.5px; min-height:16px;"></div>
+     <p class="small-note">The token is stored only in this browser — enter it once on each device and never share it. Create it at github.com → Settings → Developer settings → Fine-grained tokens.</p>`,
     `${first? '<button class="btn" onclick="cloudWorkOffline()">Work offline for now</button>' : '<button class="btn" onclick="closeModal()">Close</button>'}
      ${CLOUD.cfg? '<button class="btn btn-danger" onclick="cloudDisconnect()">Disconnect</button><button class="btn" onclick="closeModal(); cloudSave(true)">Sync now</button>':''}
-     <button class="btn btn-primary" onclick="cloudSaveCfg('${tab}')">${tab==='firebase'?'Sign in &amp; Connect':'Save &amp; Connect'}</button>`);
+     <button class="btn btn-primary" onclick="cloudSaveCfg()">Save &amp; Connect</button>`);
 }
 function cloudWorkOffline(){ closeModal(); CLOUD.status='local'; updateSavePill(); toast('Working offline — use ⬇️ Backup to keep a copy. Click the pill any time to connect.','warn'); }
 function cloudFormErr(msg){ const e=document.getElementById('cl-err'); if(e) e.textContent = msg; toast(msg,'err'); }
-async function cloudSaveCfg(tab){
-  if(tab==='firebase'){
-    const projectId = val('cl-fb-project').trim(), apiKey = val('cl-fb-key').trim(), email = val('cl-fb-email').trim(), pass = val('cl-fb-pass');
-    if(!/^[a-z0-9][a-z0-9-]{3,}$/.test(projectId)) return cloudFormErr('Project ID looks wrong. It is lower-case letters, numbers and hyphens (e.g. raza-petroleum-erp) — see Firebase console → Project settings.');
-    if(!/^AIza[\w-]{20,}$/.test(apiKey)) return cloudFormErr('The Web API key should start with “AIza”. Copy it from Firebase console → Project settings → General → Web API Key.');
-    if(!/^\S+@\S+\.\S+$/.test(email)) return cloudFormErr('Enter the email address of the Firebase user you created.');
-    if(!pass) return cloudFormErr('Enter your password.');
-    CLOUD.cfg = {provider:'firebase', firebase:{projectId, apiKey, email}, github:(CLOUD.cfg&&CLOUD.cfg.github)||{branch:'main',path:'data.json'}}; CLOUD.idToken=null;
-    try{ CLOUD.status='loading'; updateSavePill(); await fbSignIn(email, pass); }
-    catch(e){ CLOUD.cfg=null; CLOUD.status='off'; updateSavePill(); return cloudFormErr(cloudHuman(e)); }
-    cloudConnect(true);
-  } else {
-    const owner = val('cl-gh-owner').trim(), repo = val('cl-gh-repo').trim(), branch = val('cl-gh-branch').trim()||'main', path = (val('cl-gh-path').trim()||'data.json').replace(/^\/+/,''), token = val('cl-gh-token').trim();
-    if(owner.indexOf('@')>=0) return cloudFormErr('“'+owner+'” is an email address. Enter your GitHub USER NAME instead (click your profile photo on github.com — it is shown under your name, e.g. raees123).');
-    if(!/^[A-Za-z0-9](?:[A-Za-z0-9-]*)$/.test(owner)) return cloudFormErr('GitHub user names only contain letters, numbers and hyphens (no spaces).');
-    if(!/^[A-Za-z0-9._-]+$/.test(repo)) return cloudFormErr('Repository names cannot contain spaces or special characters. Rename the repository on GitHub (Settings → Repository name) to something like '+repo.replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'')+' and enter that here.');
-    if(!/\.json$/i.test(path)) return cloudFormErr('The data file must end with .json (you typed “'+path+'”). Use data.json.');
-    if(!/^(github_pat_|ghp_|gho_|ghu_|ghs_)[\w]{20,}$/.test(token)) return cloudFormErr('That does not look like a complete GitHub token. It is long (about 90 characters) and starts with github_pat_. Create a new one and copy all of it.');
-    CLOUD.cfg = {provider:'github', github:{owner, repo, branch, path, token}, firebase:(CLOUD.cfg&&CLOUD.cfg.firebase)||{}};
-    cloudSaveCfgStore(); cloudConnect(true);
-  }
+async function cloudSaveCfg(){
+  const owner = val('cl-gh-owner').trim(), repo = val('cl-gh-repo').trim(), branch = val('cl-gh-branch').trim()||'main', path = (val('cl-gh-path').trim()||'data.json').replace(/^\/+/,''), token = val('cl-gh-token').trim();
+  if(owner.indexOf('@')>=0) return cloudFormErr('“'+owner+'” is an email address. Enter your GitHub USER NAME instead (click your profile photo on github.com — it is shown under your name, e.g. raees123).');
+  if(!/^[A-Za-z0-9](?:[A-Za-z0-9-]*)$/.test(owner)) return cloudFormErr('GitHub user names only contain letters, numbers and hyphens (no spaces).');
+  if(!/^[A-Za-z0-9._-]+$/.test(repo)) return cloudFormErr('Repository names cannot contain spaces or special characters. Rename the repository on GitHub (Settings → Repository name) to something like '+repo.replace(/[^A-Za-z0-9._-]+/g,'-').replace(/^-+|-+$/g,'')+' and enter that here.');
+  if(!/\.json$/i.test(path)) return cloudFormErr('The data file must end with .json (you typed “'+path+'”). Use data.json.');
+  if(!/^(github_pat_|ghp_|gho_|ghu_|ghs_)[\w]{20,}$/.test(token)) return cloudFormErr('That does not look like a complete GitHub token. It is long (about 90 characters) and starts with github_pat_. Create a new one and copy all of it.');
+  CLOUD.cfg = {github:{owner, repo, branch, path, token}};
+  cloudSaveCfgStore(); cloudConnect(true);
 }
 function cloudDisconnect(){
-  confirmDelete('Disconnect this device from the cloud? (Data in the cloud stays safe.)', ()=>{
-    lsDel(CLOUD_KEY); CLOUD.cfg=null; CLOUD.loaded=false; CLOUD.status='off'; CLOUD.idToken=null; clearInterval(CLOUD.poll); updateSavePill(); toast('Disconnected.','warn'); });
+  confirmDelete('Disconnect this device from the cloud? (Data in GitHub stays safe.)', ()=>{
+    lsDel(CLOUD_KEY); CLOUD.cfg=null; CLOUD.loaded=false; CLOUD.status='off'; clearInterval(CLOUD.poll); updateSavePill(); toast('Disconnected.','warn'); });
 }
+
 
 /* =========================================================
    FUEL SALE — quick Cash / Credit entry, by Amount (Rs.) or Litres
