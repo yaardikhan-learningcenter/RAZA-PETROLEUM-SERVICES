@@ -1,48 +1,45 @@
-# Raza Petroleum ERP — cloud version
+# Raza Petroleum ERP — GitHub version
 
-The program is one web page (`index.html`) hosted free on **GitHub Pages**. Your data lives in a **cloud database** that every phone and PC shares. Two choices — **Firebase is recommended** because the connection is set up **once** (in `config.js`) and each device only signs in with an email and password.
+The program is one web page (`index.html`) hosted free on **GitHub Pages**. Your data is one file, `data.json`, in a **private GitHub repository**. Every phone/PC that opens the page loads and saves that same file. **No Firebase, no other service.**
 
 | File | What it is |
 |---|---|
-| `index.html`, `manifest.webmanifest`, `icon-*.png` | the program (no data inside) |
-| `config.js` | your one-time connection settings (not secret) |
-| `firestore.rules` | the security rules to paste into Firebase |
-| `data.json` | **your current offline data** — uploaded to the cloud on first connect |
+| `index.html`, `manifest.webmanifest`, `icon-*.png` | the program (no data inside) — goes in the **public** website repository |
+| `config.js` | optional: your GitHub user name + data repository name, so devices don't ask for them |
+| `data.json` | **your current offline data** (all sales, ledgers, customers, stock…) — goes in the **private** data repository |
+
+**Login:** user name `admin` — password `admin123`. Change both right after the first sign-in: **Setup → Users & Password → Change user name / password**. You can also add more users (admin or staff) there.
 
 ---
-## A. Firebase (recommended) — about 15 minutes, free plan
+## One-time setup (about 10 minutes)
 
-1. Go to **console.firebase.google.com** → **Add project** (name e.g. `raza-petroleum-erp`; Google Analytics can be off).
-2. **Build → Authentication → Get started → Sign-in method → Email/Password → Enable → Save.** Then open the **Users** tab → **Add user** → enter your email and a password. (Add one user per partner/manager who needs access.)
-3. **Build → Firestore Database → Create database** → *Production mode* → choose a nearby location (e.g. `asia-south1`) → **Enable**.
-4. In Firestore open the **Rules** tab, delete what is there, paste the content of `firestore.rules`, replace `YOUR-EMAIL@gmail.com` with the email(s) from step 2, and press **Publish**.
-5. Click the gear ⚙ → **Project settings → General**. Copy the **Project ID** and the **Web API Key**.
-6. Open `config.js` in a text editor, paste the Project ID and Web API key between the quotes, save.
-7. On github.com create a **public** repository (e.g. `raza-erp`), **Add file → Upload files**: upload `index.html`, `config.js`, `manifest.webmanifest`, `icon-192.png`, `icon-512.png`. Then **Settings → Pages → Deploy from a branch → main → / (root) → Save**. After a minute the app is live at `https://YOUR-USERNAME.github.io/raza-erp/`.
-8. Open that address. The **Cloud storage** box appears automatically → enter your Firebase email and password → **Sign in & Connect**.
-9. The box says **“Cloud database is empty”** → press **Choose offline file…** and pick either your existing offline `.html` file or the `data.json` from this folder. Everything (sales, ledgers, customers, users…) is uploaded once.
+**1. Private data repository**
+github.com → **New repository** → name `raza-erp-data` (no spaces) → **Private** → Create. Then **Add file → Upload files** → upload `data.json` → **Commit**.
 
-**Every other device:** open the same address and sign in with the email and password — nothing else. The Project ID/key come from `config.js`, and the device stays signed in.
+**2. Access token**
+github.com → your photo → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**. Repository access: **Only select repositories → raza-erp-data**. Permissions: **Contents → Read and write**. Choose the longest expiry, generate, and copy the token (starts with `github_pat_`).
 
-The Web API key in a public file is normal for Firebase — it only identifies your project. Your data is protected by the rules in step 4: nobody except the listed emails can read or write it.
+**3. Website repository**
+New **public** repository, e.g. `raza-erp`. Upload `index.html`, `config.js`, `manifest.webmanifest`, `icon-192.png`, `icon-512.png`. (Optional first: edit `config.js` and type your GitHub user name and `raza-erp-data`.) Then **Settings → Pages → Deploy from a branch → main → / (root) → Save**. After a minute the app is live at `https://YOUR-USERNAME.github.io/raza-erp/`.
 
-## B. GitHub as the database (alternative)
+**4. First open on each device**
+Open the address. The **Cloud storage** box appears → enter user name, data repository name and the token → **Save & Connect**. Your data loads, then sign in with `admin` / `admin123`. The device remembers the connection.
 
-Use this if you prefer not to use Firebase. Create a **private** repository for the data (e.g. `raza-erp-data`), upload `data.json` to it, create a fine-grained token (Contents: Read and write, only that repository) and enter it in the **GitHub repository** tab of the Cloud box on each device.
+> Do **not** put `data.json` in the public website repository — a public repository can be read by anyone.
 
-Common mistakes the app now warns about: the **owner** is your GitHub *user name* (not your email address); repository names cannot contain **spaces**; the data file must be named `data.json` (ending in `.json`); the token is long and starts with `github_pat_`. “401 Bad credentials” always means the token is wrong, incomplete or expired.
+## Updating the data on GitHub from your offline file
+* **From the app:** press 📥 (top right) → choose your offline `.html` file or a `.json` export → confirm. It is saved to GitHub within 2 seconds (pill shows **☁ Synced**).
+* **By hand:** on github.com open `raza-erp-data` → click `data.json` → ✏️ → or **Add file → Upload files** with a new `data.json` (same name replaces it).
+* If `data.json` is missing from the data repository, the app offers to create it from your offline file when you connect.
 
----
 ## Everyday use
-* Every entry is saved to the cloud 1–2 seconds after you make it; the pill at the top shows **☁ Synced**.
-* No internet? Keep working — changes are kept on that device and uploaded automatically when the connection returns.
+* Every entry is saved to GitHub 1–2 seconds after you make it; the pill at the top shows **☁ Synced**.
+* No internet? Keep working — changes stay on that device and upload automatically when the connection returns.
 * Two devices at once: a screen with nothing unsaved refreshes itself every 30 seconds. If both change data at the same moment you are asked which copy to keep.
-* On a phone use **Add to Home Screen** to get an app icon. The ＋ button opens quick entry.
-* **Database & Export** (Menu → System) downloads every table as Excel, CSV or JSON.
-* **Setup → Users & Password** turns on the in-app sign-in screen (admin/staff).
-* Move offline data in any time with 📥 (accepts the offline `.html` or a `.json` export).
+* On a phone use **Add to Home Screen** to get an app icon.
+* **Database & Export** (Menu → System) downloads every table as Excel, CSV or JSON. Use ⬇️ (full backup) weekly as a second copy. GitHub also keeps every earlier version of `data.json` in the repository's commit history.
 
-## Safety
-* Keep Firestore rules as given; never switch the database to “test mode”.
-* Use ⬇️ (full backup) weekly as a second copy.
-* **Forgot the app (Users) password?** On the sign-in screen press **Forgot password?** and enter your Firebase password (or GitHub token). The app sign-in is switched off so you can create a new admin under Setup → Users & Password.
+## Troubleshooting
+* **“401 Bad credentials”** — the token is wrong, incomplete or expired. Make a new one and paste all of it.
+* **“404 / cannot find repository”** — the owner is your GitHub *user name* (not email); the repository name has no spaces; the token must be given access to that repository.
+* **Forgot the app password?** On the sign-in screen press **Forgot password?**, paste your GitHub token. The login is reset to `admin` / `admin123`; then change it in Setup.
